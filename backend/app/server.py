@@ -171,13 +171,21 @@ async def search(request: SearchRequest):
   )
   answer = response["output"]["message"]["content"][0]["text"]
 
-  # Deduplicated list of matching filenames
-  filenames = list(dict.fromkeys(row[2] for row in results))
+  # Deduplicate sources by filename, keeping the highest similarity per file
+  best_by_file: dict[str, tuple] = {}
+  for row in results:
+    filename = row[2]
+    similarity = row[3]
+    if filename not in best_by_file or similarity > best_by_file[filename][3]:
+      best_by_file[filename] = row
+
+  filenames = list(best_by_file.keys())
+  sources = [{"filename": row[2], "similarity": round(row[3], 4), "excerpt": row[0][:200]} for row in best_by_file.values()]
 
   return {
     "answer": answer,
     "filenames": filenames,
-    "sources": [{"filename": row[2], "similarity": round(row[3], 4), "excerpt": row[0][:200]} for row in results]
+    "sources": sources,
   }
 
 

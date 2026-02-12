@@ -136,3 +136,14 @@ Add [Stripe](https://stripe.com/) to turn this into a SaaS product:
 - Stripe Checkout for subscription management
 - Webhook integration to activate/deactivate features based on subscription status
 - Usage-based billing option for high-volume API consumers
+
+
+## Frontend
+
+The UI is a Next.js app in `frontend/search-knowledge-base-app/`.
+
+```bash
+cd frontend/search-knowledge-base-app && npm run dev
+```
+
+Open `http://localhost:3000` — it redirects to `/home` where you can search the knowledge base.
