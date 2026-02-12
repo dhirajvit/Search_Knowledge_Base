@@ -1,9 +1,10 @@
 # Search Knowledge Base
 
 Semantic search API over local documents using AWS Bedrock embeddings and PostgreSQL with pgvector.
-The problem targetted is to locate a trainning video based on semantic search. We watch trainning video but
-later forgets which trainning video has the details.For Ex. if I want to search which training video has how to setup mac for python3, I can search among a vector database of transcripts and .md files attached to the video.
-The more important use case is when the vector database is created from a video file. For Ex. a lecture delivered by a teacher in school, a court case discussed by lawyer or politician statement done 50 years ago. We can convert video into transcript and create vector from it.
+
+The problem targeted is to locate a training video based on semantic search. We watch training videos but later forget which one has the details. For example, if I want to search which training video covers how to setup Mac for Python 3, I can search among a vector database of transcripts and `.md` files attached to the video.
+
+The more important use case is when the vector database is created from a video file — a lecture delivered by a teacher in school, a court case discussed by a lawyer, or a politician's statement from 50 years ago. We can convert video into transcript and create vectors from it.
 
 ## Tech Stack
 
@@ -72,21 +73,48 @@ CREATE INDEX ON chunks (document_id);
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `DATABASE_URL` | — | PostgreSQL connection string |
-| `DEFAULT_AWS_REGION` | `ap-southeast-2` | AWS region for Bedrock |
-| `BEDROCK_MODEL_ID` | `amazon.nova-lite-v1:0` | Bedrock LLM model |
-| `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model |
-| `CORS_ORIGINS` | `http://localhost:3000` | Allowed CORS origins (comma-separated) |
+| Variable                 | Default                        | Description                            |
+| ------------------------ | ------------------------------ | -------------------------------------- |
+| `DATABASE_URL`           | —                              | PostgreSQL connection string           |
+| `DEFAULT_AWS_REGION`     | `ap-southeast-2`               | AWS region for Bedrock                 |
+| `BEDROCK_MODEL_ID`       | `amazon.nova-lite-v1:0`        | Bedrock LLM model                      |
+| `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model                |
+| `CORS_ORIGINS`           | `http://localhost:3000`        | Allowed CORS origins (comma-separated) |
 
 ## API Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Root — returns API info |
-| `GET` | `/health` | Health check |
-| `GET` | `/create_vector` | Load documents, generate embeddings, store in PostgreSQL |
+| Method | Path             | Description                                              |
+| ------ | ---------------- | -------------------------------------------------------- |
+| `GET`  | `/`              | Root — returns API info                                  |
+| `GET`  | `/health`        | Health check                                             |
+| `GET`  | `/create_vector` | Load documents, generate embeddings, store in PostgreSQL |
+| `POST` | `/search`        | Semantic search — takes a question, returns LLM answer with sources |
+
+## Usage Example
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"question": "clone a repository in linux"}'
+```
+
+Response:
+
+```json
+{
+  "answer": "# Clone a Repository in Linux\n\nTo clone a repository...",
+  "filenames": [
+    "documents/udemy/ai-engineering/SETUP-git-linux.md"
+  ],
+  "sources": [
+    {
+      "filename": "documents/udemy/ai-engineering/SETUP-git-linux.md",
+      "similarity": 0.3586,
+      "excerpt": "# Setting Up Git on Linux..."
+    }
+  ]
+}
+```
 
 ## Future Enhancements
 
