@@ -57,13 +57,19 @@ export default function HomePage() {
       </h1>
 
       <form onSubmit={handleSubmit} className="mb-10 flex gap-3">
-        <input
-          type="text"
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="Ask a question..."
-          className="flex-1 rounded-lg border border-zinc-300 px-4 py-3 text-base outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-zinc-400"
-        />
+        <div className="relative flex-1">
+          <input
+            type="text"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value.slice(0, 1000))}
+            maxLength={1000}
+            placeholder="Ask a question..."
+            className="w-full rounded-lg border border-zinc-300 px-4 py-3 text-base outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-zinc-400"
+          />
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-400">
+            {question.length}/1000
+          </span>
+        </div>
         <button
           type="submit"
           disabled={loading || !question.trim()}

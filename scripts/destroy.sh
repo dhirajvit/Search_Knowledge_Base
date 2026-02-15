@@ -27,7 +27,6 @@ cd "$(dirname "$0")/../terraform"
 # Initialize terraform with S3 backend
 echo "🔧 Initializing Terraform with S3 backend..."
 # TODO dynamo db lock is disabled to delay creation the table
-
 terraform init -input=false \
   -backend-config="bucket=search-knowledge-base-terraform-state-${AWS_ACCOUNT_ID}" \
   -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
@@ -48,7 +47,26 @@ terraform workspace select "$ENVIRONMENT"
 
 echo "🔥 Running terraform destroy..."
 
-    terraform destroy -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+# Create a dummy lambda zip if it doesn't exist (needed for destroy in GitHub Actions)
+if [ ! -f "../backend/lambda-deployment.zip" ]; then
+    echo "Creating dummy lambda package for destroy operation..."
+    echo "dummy" | zip ../backend/lambda-deployment.zip -
+fi
+
+# Delete Lambda function first to allow ENIs to be cleaned up
+echo "⏳ Removing Lambda function to cleanup VPC ENIs..."
+
+LAMBDA_NAME="${PROJECT_NAME}-${ENVIRONMENT}-api"
+
+if aws lambda get-function --function-name "$LAMBDA_NAME" 2>/dev/null; then
+    aws lambda delete-function --function-name "$LAMBDA_NAME"
+    echo "  Waiting 30 seconds for ENIs to be released..."
+    sleep 30
+else
+    echo "  Lambda function not found or already deleted"
+fi
+
+terraform destroy -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
 
 echo "✅ Infrastructure for ${ENVIRONMENT} has been destroyed!"
 echo ""

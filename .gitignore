@@ -29,4 +29,8 @@ Thumbs.db
 # uv
 .python-version
 
+# Lambda
+lambda-deployment.zip
+lambda-package/
 
+lambda-requirements.txt

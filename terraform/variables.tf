@@ -22,8 +22,26 @@ variable "bedrock_model_id" {
   default     = "amazon.nova-lite-v1:0"
 }
 
+variable "bedrock_embed_model_id" {
+  description = "bedrock_embed_model_id"
+  type        = string
+  default     = "amazon.titan-embed-text-v2:0"
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
   default     = "10.0.0.0/16"
+}
+
+variable "api_daily_quota" {
+  description = "API Gateway daily request quota"
+  type        = number
+  default     = 5
+}
+
+variable "lambda_timeout" {
+  description = "Timeout in seconds for the Lambda function"
+  type        = number
+  default     = 30
 }
