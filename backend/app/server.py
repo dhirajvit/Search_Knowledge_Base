@@ -210,7 +210,7 @@ async def search(request: SearchRequest):
 
     if not results:
         return {
-            "answer": "No relevant documents found in the knowledge base.",
+            "answer": "No relevant documents found in the knowledge base.The search is grounded uploaded documents with only one document related to setup git on linux",
             "filenames": [],
             "sources": [],
         }
