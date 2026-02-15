@@ -1,0 +1,19 @@
+[project]
+name = "search-knowledge-base"
+version = "0.1.0"
+description = "This project creates a semantic search on local file system"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "python-dotenv",
+    "boto3",
+    "uvicorn",
+    "mangum",
+    "langchain-community",
+    "langchain-text-splitters",
+    "psycopg2-binary",
+    "alembic"
+]
+

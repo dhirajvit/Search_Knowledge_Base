@@ -43,7 +43,25 @@ echo "🎯 Applying Terraform..."
 "${TF_APPLY_CMD[@]}"
 
 API_URL=$(terraform output -raw api_gateway_url)
+CLOUDFRONT_URL=$(terraform output -raw cloudfront_url)
+API_KEY=$(terraform output -raw api_key)
+FRONTEND_BUCKET=$(terraform output -raw frontend_bucket_name)
+CLOUDFRONT_DIST_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?Origins.Items[?Id=='s3-frontend']].Id | [0]" --output text)
+
+# Build and deploy frontend
+cd ..
+echo "🖥️  Building frontend..."
+cd frontend/search-knowledge-base-app
+NEXT_PUBLIC_API_URL="${CLOUDFRONT_URL}/${ENVIRONMENT}" NEXT_PUBLIC_API_KEY="${API_KEY}" npm run build
+
+echo "📤 Uploading frontend to s3://${FRONTEND_BUCKET}/ ..."
+aws s3 sync out/ "s3://${FRONTEND_BUCKET}/" --delete --region "${AWS_REGION}"
+
+if [ -n "$CLOUDFRONT_DIST_ID" ] && [ "$CLOUDFRONT_DIST_ID" != "None" ]; then
+  echo "🔄 Invalidating CloudFront cache..."
+  aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DIST_ID" --paths "/*" > /dev/null
+fi
 
 echo -e "\n✅ Deployment complete!"
-echo "🌐 CloudFront URL : $(terraform -chdir=terraform output -raw cloudfront_url)"
+echo "🌐 CloudFront URL : $CLOUDFRONT_URL"
 echo "📡 API Gateway    : $API_URL"

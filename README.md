@@ -28,17 +28,17 @@ User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  L
                                                                      S3 Documents
 ```
 
-| Component          | Technology                                          |
-|--------------------|-----------------------------------------------------|
-| Frontend           | Next.js with Tailwind CSS                           |
-| Backend            | FastAPI on AWS Lambda via Mangum                    |
-| LLM                | Amazon Bedrock — Nova Lite (chat), Titan (embeddings) |
-| Database           | RDS PostgreSQL 16 with pgvector                     |
-| Migrations         | Alembic                                             |
-| Infrastructure     | Terraform                                           |
-| Networking         | VPC, public/private subnets, NAT Gateway, IGW       |
-| API                | API Gateway REST v1, CloudFront, API key + quota    |
-| Document Storage   | S3                                                  |
+| Component        | Technology                                            |
+| ---------------- | ----------------------------------------------------- |
+| Frontend         | Next.js with Tailwind CSS                             |
+| Backend          | FastAPI on AWS Lambda via Mangum                      |
+| LLM              | Amazon Bedrock — Nova Lite (chat), Titan (embeddings) |
+| Database         | RDS PostgreSQL 16 with pgvector                       |
+| Migrations       | Alembic                                               |
+| Infrastructure   | Terraform                                             |
+| Networking       | VPC, public/private subnets, NAT Gateway, IGW         |
+| API              | API Gateway REST v1, CloudFront, API key + quota      |
+| Document Storage | S3                                                    |
 
 ## Project Structure
 
@@ -75,16 +75,22 @@ User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  L
 
 ## API Endpoints
 
-| Method | Path             | Description                                      |
-|--------|------------------|--------------------------------------------------|
-| `GET`  | `/`              | Root — returns API info                          |
-| `GET`  | `/health`        | Health check                                     |
+| Method | Path             | Description                                                       |
+| ------ | ---------------- | ----------------------------------------------------------------- |
+| `GET`  | `/`              | Root — returns API info                                           |
+| `GET`  | `/health`        | Health check                                                      |
 | `POST` | `/search`        | Semantic search (max 1000 chars), returns RAG answer with sources |
-| `GET`  | `/create_vector` | Download docs from S3, generate embeddings, store in PostgreSQL |
+| `GET`  | `/create_vector` | Download docs from S3, generate embeddings, store in PostgreSQL   |
 
 All endpoints require an API key via `x-api-key` header. Daily quota: 100 requests.
 
 ## Sample Request and Response
+
+Question: what is capital of australia
+Answer: No relevant documents found in the knowledge base.
+
+Question : setup instruction for git on linux
+Answer : instruction with grounded document ref: /tmp/tmpwv007xhl/udemy/ai-engineering/SETUP-git-linux.md
 
 ### POST /search
 
@@ -123,13 +129,13 @@ curl https://<api-gateway-url>/dev/health \
 ```
 
 ```json
-{"status": "healthy"}
+{ "status": "healthy" }
 ```
 
 ### When daily quota is reached
 
 ```json
-{"message": "Limit Exceeded"}
+{ "message": "Limit Exceeded" }
 ```
 
 ## Prerequisites
@@ -214,7 +220,7 @@ curl https://<api-gateway-url>/dev/create_vector \
 ### Local (`.env`)
 
 | Variable                 | Default                        | Description                            |
-|--------------------------|--------------------------------|----------------------------------------|
+| ------------------------ | ------------------------------ | -------------------------------------- |
 | `DATABASE_URL`           | —                              | PostgreSQL connection string           |
 | `DEFAULT_AWS_REGION`     | `ap-southeast-2`               | AWS region for Bedrock                 |
 | `BEDROCK_MODEL_ID`       | `amazon.nova-lite-v1:0`        | Bedrock LLM model                      |
@@ -224,17 +230,17 @@ curl https://<api-gateway-url>/dev/create_vector \
 
 ### Lambda (set by Terraform)
 
-| Variable                 | Description                                |
-|--------------------------|--------------------------------------------|
-| `RDS_ENDPOINT`           | RDS instance hostname                      |
-| `DB_PORT`                | RDS port                                   |
-| `DB_NAME`                | Database name                              |
-| `DB_USER`                | Database username                          |
-| `DB_PASSWORD_SECRET_ARN` | Secrets Manager ARN for the RDS password   |
-| `DOCUMENTS_BUCKET`       | S3 bucket for knowledge base documents     |
-| `CORS_ORIGINS`           | CloudFront domain                          |
-| `BEDROCK_MODEL_ID`       | Bedrock LLM model                          |
-| `BEDROCK_EMBED_MODEL_ID` | Bedrock embedding model                    |
+| Variable                 | Description                              |
+| ------------------------ | ---------------------------------------- |
+| `RDS_ENDPOINT`           | RDS instance hostname                    |
+| `DB_PORT`                | RDS port                                 |
+| `DB_NAME`                | Database name                            |
+| `DB_USER`                | Database username                        |
+| `DB_PASSWORD_SECRET_ARN` | Secrets Manager ARN for the RDS password |
+| `DOCUMENTS_BUCKET`       | S3 bucket for knowledge base documents   |
+| `CORS_ORIGINS`           | CloudFront domain                        |
+| `BEDROCK_MODEL_ID`       | Bedrock LLM model                        |
+| `BEDROCK_EMBED_MODEL_ID` | Bedrock embedding model                  |
 
 ## Deployment
 
@@ -243,6 +249,7 @@ curl https://<api-gateway-url>/dev/create_vector \
 ```
 
 This script:
+
 1. Builds the Lambda deployment package using Docker
 2. Uploads the zip to S3
 3. Runs `terraform init` and `terraform apply`
@@ -277,14 +284,14 @@ This deletes the Lambda function first (to release VPC ENIs), then runs `terrafo
 
 Key variables in `terraform/terraform.tfvars`:
 
-| Variable                 | Value                            | Description              |
-|--------------------------|----------------------------------|--------------------------|
-| `project_name`           | `search-knowledge-base`          | Resource name prefix     |
-| `environment`            | `dev`                            | Environment name         |
-| `bedrock_model_id`       | `amazon.nova-lite-v1:0`          | Bedrock chat model       |
-| `bedrock_embed_model_id` | `amazon.titan-embed-text-v2:0`   | Bedrock embedding model  |
-| `api_daily_quota`        | `100`                            | API requests per day     |
-| `lambda_timeout`         | `60`                             | Lambda timeout (seconds) |
+| Variable                 | Value                          | Description              |
+| ------------------------ | ------------------------------ | ------------------------ |
+| `project_name`           | `search-knowledge-base`        | Resource name prefix     |
+| `environment`            | `dev`                          | Environment name         |
+| `bedrock_model_id`       | `amazon.nova-lite-v1:0`        | Bedrock chat model       |
+| `bedrock_embed_model_id` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model  |
+| `api_daily_quota`        | `100`                          | API requests per day     |
+| `lambda_timeout`         | `60`                           | Lambda timeout (seconds) |
 
 ## Troubleshooting
 
@@ -317,6 +324,7 @@ Migrations run at module load time (once per Lambda cold start), not on every re
 ### No documents found after create_vector
 
 Ensure documents are uploaded to S3 in subdirectories:
+
 ```bash
 # Correct — file is inside a subdirectory
 aws s3 cp doc.md s3://<bucket>/guides/doc.md
@@ -337,6 +345,15 @@ Integrate [Clerk](https://clerk.com/) for user authentication and multi-tenancy:
 - Protect API endpoints with JWT verification middleware
 - Per-user knowledge bases — scope documents and chunks to the authenticated user
 - User dashboard to manage uploaded documents and search history
+
+### Secure API Key with JWT Tokens
+
+The API key is currently embedded in the frontend bundle via `NEXT_PUBLIC_API_KEY`, which exposes it in client-side JavaScript. Replace with JWT-based authentication:
+
+- Issue short-lived JWT tokens after user login (via Clerk or custom auth)
+- Validate JWT in a Lambda authorizer attached to API Gateway
+- Remove the static API key requirement from frontend
+- Rate limiting moves from API key quota to per-user token claims
 
 ### Payments with Stripe
 

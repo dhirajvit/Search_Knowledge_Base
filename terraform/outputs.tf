@@ -73,3 +73,8 @@ output "documents_bucket_name" {
   description = "S3 bucket for knowledge base documents"
   value       = aws_s3_bucket.documents.id
 }
+
+output "frontend_bucket_name" {
+  description = "S3 bucket for frontend static files"
+  value       = aws_s3_bucket.frontend.id
+}

@@ -136,6 +136,7 @@ async def create_vector():
             folder_docs = loader.load()
             for doc in folder_docs:
                 doc.metadata["doc_type"] = doc_type
+                doc.metadata["source"] = doc.metadata.get("source", "").replace(tmp_dir + "/", "")
                 documents.append(doc)
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -208,7 +209,11 @@ async def search(request: SearchRequest):
     conn.close()
 
     if not results:
-        raise HTTPException(status_code=404, detail="No relevant documents found")
+        return {
+            "answer": "No relevant documents found in the knowledge base.",
+            "filenames": [],
+            "sources": [],
+        }
 
     context = "\n\n".join([f"[Source: {row[2]}]\n{row[0]}" for row in results])
 

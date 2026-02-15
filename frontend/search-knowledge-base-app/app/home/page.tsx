@@ -30,9 +30,15 @@ export default function HomePage() {
     setResult(null);
 
     try {
-      const res = await fetch("http://localhost:8000/search", {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (process.env.NEXT_PUBLIC_API_KEY) {
+        headers["x-api-key"] = process.env.NEXT_PUBLIC_API_KEY;
+      }
+
+      const res = await fetch(`${apiUrl}/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ question }),
       });
 
