@@ -43,3 +43,33 @@ output "cloudfront_url" {
   description = "CloudFront distribution URL"
   value       = "https://${aws_cloudfront_distribution.main.domain_name}"
 }
+
+output "rds_endpoint" {
+  description = "RDS instance endpoint"
+  value       = aws_db_instance.postgres.address
+}
+
+output "rds_port" {
+  description = "RDS instance port"
+  value       = aws_db_instance.postgres.port
+}
+
+output "rds_database_name" {
+  description = "RDS database name"
+  value       = aws_db_instance.postgres.db_name
+}
+
+output "rds_username" {
+  description = "RDS master username"
+  value       = aws_db_instance.postgres.username
+}
+
+output "rds_password_secret_arn" {
+  description = "Secrets Manager ARN for RDS password"
+  value       = aws_db_instance.postgres.master_user_secret[0].secret_arn
+}
+
+output "documents_bucket_name" {
+  description = "S3 bucket for knowledge base documents"
+  value       = aws_s3_bucket.documents.id
+}

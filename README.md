@@ -1,6 +1,6 @@
 # Search Knowledge Base
 
-Semantic search API over local documents using AWS Bedrock embeddings and PostgreSQL with pgvector.
+Semantic search over documents using AWS Bedrock embeddings, PostgreSQL with pgvector, and RAG-powered answers.
 
 The problem targeted is to locate a training video based on semantic search. We watch training videos but later forget which one has the details. For example, if I want to search which training video covers how to setup Mac for Python 3, I can search among a vector database of transcripts and `.md` files attached to the video.
 
@@ -12,24 +12,33 @@ The more important use case is when the vector database is created from a video 
 - RAG (Retrieval-Augmented Generation) powered answers via Amazon Bedrock
 - Document chunking with LangChain text splitters
 - Vector similarity search using PostgreSQL with pgvector
-- REST API with daily request quota (100/day) and API key authentication
+- Documents stored in S3 — downloaded and vectorized on demand
+- Database migrations managed by Alembic (auto-run on Lambda cold start)
+- REST API with daily request quota and API key authentication
 - CloudFront CDN in front of API Gateway
-- Automated deployment via shell scripts and Terraform
+- Input validation (max 1000 characters) on both backend and frontend
 - Lambda deployment packages uploaded to S3 (supports bundles > 70MB)
-- Input validation (max 1000 characters per search query)
-- Cost control: daily quota per API key limits LLM calls, input size limit controls token usage
+- Full Terraform IaC — VPC, subnets, NAT Gateway, RDS, Lambda, API Gateway, CloudFront
 
 ## Architecture
 
 ```
-Frontend (Next.js)  -->  CloudFront  -->  API Gateway (REST)  -->  Lambda  -->  Bedrock / PostgreSQL
+User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  Lambda  →  Bedrock / RDS PostgreSQL
+                                                                           ↕
+                                                                     S3 Documents
 ```
 
-- **Frontend** - Next.js app with Tailwind CSS
-- **Backend** - FastAPI running on AWS Lambda via Mangum
-- **LLM** - Amazon Bedrock (Nova Lite for chat, Titan for embeddings)
-- **Database** - PostgreSQL with pgvector for vector similarity search
-- **Infrastructure** - Terraform (VPC, subnets, API Gateway, Lambda, CloudFront, S3)
+| Component          | Technology                                          |
+|--------------------|-----------------------------------------------------|
+| Frontend           | Next.js with Tailwind CSS                           |
+| Backend            | FastAPI on AWS Lambda via Mangum                    |
+| LLM                | Amazon Bedrock — Nova Lite (chat), Titan (embeddings) |
+| Database           | RDS PostgreSQL 16 with pgvector                     |
+| Migrations         | Alembic                                             |
+| Infrastructure     | Terraform                                           |
+| Networking         | VPC, public/private subnets, NAT Gateway, IGW       |
+| API                | API Gateway REST v1, CloudFront, API key + quota    |
+| Document Storage   | S3                                                  |
 
 ## Project Structure
 
@@ -37,33 +46,41 @@ Frontend (Next.js)  -->  CloudFront  -->  API Gateway (REST)  -->  Lambda  -->  
 .
 ├── backend/
 │   ├── app/
-│   │   └── server.py          # FastAPI application
-│   ├── lambda_handler.py      # Lambda entry point (Mangum)
-│   ├── deploy.py              # Builds Lambda zip and uploads to S3
-│   └── pyproject.toml         # Python dependencies
+│   │   ├── server.py                  # FastAPI application
+│   │   └── database/
+│   │       ├── alembic.ini            # Alembic configuration
+│   │       └── migrations/
+│   │           ├── env.py             # Alembic environment (DB URL builder)
+│   │           ├── script.py.mako     # Migration template
+│   │           └── versions/
+│   │               └── 0001_create_initial_tables.py
+│   ├── lambda_handler.py             # Lambda entry point (Mangum)
+│   ├── deploy.py                     # Builds Lambda zip and uploads to S3
+│   └── pyproject.toml                # Python dependencies
 ├── frontend/
-│   └── search-knowledge-base-app/   # Next.js application
+│   └── search-knowledge-base-app/    # Next.js application
 ├── scripts/
-│   ├── deploy.sh              # Full deployment script
-│   └── destroy.sh             # Tear down infrastructure
+│   ├── deploy.sh                     # Full deployment script
+│   └── destroy.sh                    # Tear down infrastructure
 └── terraform/
-    ├── main.tf                # Lambda, API Gateway, CloudFront, S3, IAM
-    ├── networking.tf          # VPC, subnets, route tables, security groups
-    ├── variables.tf           # Input variables
-    ├── outputs.tf             # Terraform outputs
-    ├── terraform.tfvars       # Variable values
-    ├── backend.tf             # S3 remote state backend
-    └── versions.tf            # Provider configuration
+    ├── main.tf                       # Lambda, API Gateway, CloudFront, S3, IAM
+    ├── networking.tf                 # VPC, subnets, route tables, NAT GW, security groups
+    ├── database.tf                   # RDS PostgreSQL
+    ├── variables.tf                  # Input variables
+    ├── outputs.tf                    # Terraform outputs
+    ├── terraform.tfvars              # Variable values
+    ├── backend.tf                    # S3 remote state backend
+    └── versions.tf                   # Provider configuration
 ```
 
 ## API Endpoints
 
-| Method | Path              | Description                                              |
-|--------|-------------------|----------------------------------------------------------|
-| `GET`  | `/`               | Root — returns API info                                  |
-| `GET`  | `/health`         | Health check                                             |
-| `POST` | `/search`         | Semantic search — takes a question (max 1000 chars), returns LLM answer with sources |
-| `GET`  | `/create_vector`  | Load documents, generate embeddings, store in PostgreSQL |
+| Method | Path             | Description                                      |
+|--------|------------------|--------------------------------------------------|
+| `GET`  | `/`              | Root — returns API info                          |
+| `GET`  | `/health`        | Health check                                     |
+| `POST` | `/search`        | Semantic search (max 1000 chars), returns RAG answer with sources |
+| `GET`  | `/create_vector` | Download docs from S3, generate embeddings, store in PostgreSQL |
 
 All endpoints require an API key via `x-api-key` header. Daily quota: 100 requests.
 
@@ -106,24 +123,20 @@ curl https://<api-gateway-url>/dev/health \
 ```
 
 ```json
-{
-  "status": "healthy"
-}
+{"status": "healthy"}
 ```
 
 ### When daily quota is reached
 
 ```json
-{
-  "message": "Limit Exceeded"
-}
+{"message": "Limit Exceeded"}
 ```
 
 ## Prerequisites
 
 - Python 3.12+
 - Node.js
-- Docker (for Lambda packaging and PostgreSQL)
+- Docker (for Lambda packaging and local PostgreSQL)
 - AWS CLI configured with Bedrock model access enabled
 - Terraform
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
@@ -135,7 +148,7 @@ curl https://<api-gateway-url>/dev/health \
 ```bash
 cd backend
 uv sync
-cp .env.example .env   # fill in values
+cp .env.example .env   # fill in DATABASE_URL, AWS credentials
 uv run uvicorn app.server:app --reload --port 8000
 ```
 
@@ -149,7 +162,7 @@ npm run dev
 
 Open `http://localhost:3000` — it redirects to `/home` where you can search the knowledge base.
 
-## Database Setup
+### Local Database
 
 Start PostgreSQL with pgvector:
 
@@ -160,34 +173,45 @@ docker run --name postgres \
     -d pgvector/pgvector:pg16
 ```
 
-Create the schema:
+Migrations run automatically on server startup via Alembic. Set `DATABASE_URL` in your `.env`:
 
-```sql
-CREATE EXTENSION vector;
+```
+DATABASE_URL=postgresql://postgres:your_password@localhost:5432/searchknowledgebase
+```
 
-CREATE TABLE documents (
-    id SERIAL PRIMARY KEY,
-    filename VARCHAR(500),
-    source_url TEXT,
-    doc_type VARCHAR(50),
-    created_at TIMESTAMP DEFAULT NOW()
-);
+## Uploading Documents to S3
 
-CREATE TABLE chunks (
-    id SERIAL PRIMARY KEY,
-    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_index INTEGER,
-    content TEXT NOT NULL,
-    embedding vector(1024),
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP DEFAULT NOW()
-);
+Documents must be `.md` files organized in subdirectories. Each subdirectory name becomes the `doc_type` metadata.
 
-CREATE INDEX ON chunks USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX ON chunks (document_id);
+```
+<bucket>/
+  guides/
+    setup-guide.md
+    deployment.md
+  tutorials/
+    getting-started.md
+```
+
+**Steps:**
+
+```bash
+# 1. Get bucket name
+cd terraform && terraform output documents_bucket_name
+
+# 2. Upload documents
+aws s3 sync ./documents/ s3://<bucket-name>/
+
+# Or upload a single file
+aws s3 cp my-doc.md s3://<bucket-name>/guides/my-doc.md
+
+# 3. Trigger vectorization
+curl https://<api-gateway-url>/dev/create_vector \
+  -H "x-api-key: <your-api-key>"
 ```
 
 ## Environment Variables
+
+### Local (`.env`)
 
 | Variable                 | Default                        | Description                            |
 |--------------------------|--------------------------------|----------------------------------------|
@@ -196,6 +220,21 @@ CREATE INDEX ON chunks (document_id);
 | `BEDROCK_MODEL_ID`       | `amazon.nova-lite-v1:0`        | Bedrock LLM model                      |
 | `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model                |
 | `CORS_ORIGINS`           | `http://localhost:3000`        | Allowed CORS origins (comma-separated) |
+| `DOCUMENTS_BUCKET`       | —                              | S3 bucket for knowledge base documents |
+
+### Lambda (set by Terraform)
+
+| Variable                 | Description                                |
+|--------------------------|--------------------------------------------|
+| `RDS_ENDPOINT`           | RDS instance hostname                      |
+| `DB_PORT`                | RDS port                                   |
+| `DB_NAME`                | Database name                              |
+| `DB_USER`                | Database username                          |
+| `DB_PASSWORD_SECRET_ARN` | Secrets Manager ARN for the RDS password   |
+| `DOCUMENTS_BUCKET`       | S3 bucket for knowledge base documents     |
+| `CORS_ORIGINS`           | CloudFront domain                          |
+| `BEDROCK_MODEL_ID`       | Bedrock LLM model                          |
+| `BEDROCK_EMBED_MODEL_ID` | Bedrock embedding model                    |
 
 ## Deployment
 
@@ -208,9 +247,9 @@ This script:
 2. Uploads the zip to S3
 3. Runs `terraform init` and `terraform apply`
 
-### First-time S3 bucket setup
+### First-time Setup
 
-If the Lambda S3 bucket doesn't exist yet, create it first:
+Create the S3 bucket for Lambda deployments before the first deploy:
 
 ```bash
 cd terraform
@@ -232,11 +271,13 @@ terraform output api_key
 ./scripts/destroy.sh dev
 ```
 
-## Configuration
+This deletes the Lambda function first (to release VPC ENIs), then runs `terraform destroy`.
+
+## Terraform Configuration
 
 Key variables in `terraform/terraform.tfvars`:
 
-| Variable                 | Default                          | Description              |
+| Variable                 | Value                            | Description              |
 |--------------------------|----------------------------------|--------------------------|
 | `project_name`           | `search-knowledge-base`          | Resource name prefix     |
 | `environment`            | `dev`                            | Environment name         |
@@ -249,19 +290,42 @@ Key variables in `terraform/terraform.tfvars`:
 
 ### Lambda bundle size exceeds 70MB
 
-AWS Lambda has a 70MB limit for direct zip uploads via the `CreateFunction` API. If your deployment zip exceeds this:
+AWS Lambda has a 70MB limit for direct zip uploads. This project uses S3-based deployment to avoid this:
 
-1. Upload the zip to S3 instead of using direct file upload
-2. Reference the S3 bucket and key in the Lambda Terraform resource:
-   ```hcl
-   resource "aws_lambda_function" "api" {
-     s3_bucket = aws_s3_bucket.lambda_deployments.id
-     s3_key    = "lambda-deployment.zip"
-     ...
-   }
-   ```
-3. To reduce bundle size, exclude packages already in the Lambda runtime (e.g. `boto3`, `botocore`) from the deployment zip
-4. Remove unused dependencies from `pyproject.toml`
+1. `deploy.py` builds the zip locally
+2. `deploy.sh` uploads it to S3
+3. Lambda resource references `s3_bucket` and `s3_key` instead of `filename`
+
+To reduce bundle size further, exclude packages already in the Lambda runtime (e.g. `boto3`, `botocore`) from the deployment zip.
+
+### Lambda code changes not deploying
+
+The Lambda resource uses `source_code_hash` from the S3 object's ETag. If Terraform doesn't detect changes:
+
+```bash
+# Re-upload the zip to S3 (deploy.sh does this automatically)
+aws s3 cp backend/lambda-deployment.zip s3://<bucket>/lambda-deployment.zip
+
+# Then re-apply
+cd terraform && terraform apply
+```
+
+### Migrations running on every request
+
+Migrations run at module load time (once per Lambda cold start), not on every request. If you see repeated migration logs, it means Lambda is cold-starting frequently. This is normal for low-traffic environments.
+
+### No documents found after create_vector
+
+Ensure documents are uploaded to S3 in subdirectories:
+```bash
+# Correct — file is inside a subdirectory
+aws s3 cp doc.md s3://<bucket>/guides/doc.md
+
+# Wrong — file is at root level (will be skipped)
+aws s3 cp doc.md s3://<bucket>/doc.md
+```
+
+Only `.md` files are processed.
 
 ## Future Enhancements
 

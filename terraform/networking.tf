@@ -35,6 +35,24 @@ resource "aws_subnet" "private" {
   }
 }
 
+resource "aws_subnet" "private_b" {
+  provider          = aws.ap-southeast-2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "ap-southeast-2b"
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-private-subnet-b"
+    Environment = var.environment
+  }
+}
+
+resource "aws_route_table_association" "private_b" {
+  provider       = aws.ap-southeast-2
+  subnet_id      = aws_subnet.private_b.id
+  route_table_id = aws_route_table.private.id
+}
+
 resource "aws_internet_gateway" "main" {
   provider = aws.ap-southeast-2
   vpc_id   = aws_vpc.main.id
@@ -128,6 +146,26 @@ resource "aws_security_group" "lambda" {
 
   tags = {
     Name        = "${var.project_name}-${var.environment}-lambda-sg"
+    Environment = var.environment
+  }
+}
+
+# Security group for RDS
+resource "aws_security_group" "rds" {
+  provider    = aws.ap-southeast-2
+  name        = "${var.project_name}-${var.environment}-rds-sg"
+  description = "Security group for RDS database"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda.id]
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-rds-sg"
     Environment = var.environment
   }
 }
