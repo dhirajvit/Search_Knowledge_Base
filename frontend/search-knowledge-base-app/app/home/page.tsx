@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, useEffect, useRef, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 
 interface Source {
@@ -15,11 +15,58 @@ interface SearchResponse {
   sources: Source[];
 }
 
+interface ConversationTurn {
+  question: string;
+  answer: string;
+  sources: Source[];
+}
+
 export default function HomePage() {
   const [question, setQuestion] = useState("");
-  const [result, setResult] = useState<SearchResponse | null>(null);
+  const [conversation, setConversation] = useState<ConversationTurn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sessionIdRef = useRef<string>("");
+
+  useEffect(() => {
+    // Generate or retrieve session ID
+    let id = sessionStorage.getItem("session_id");
+    if (!id) {
+      id = crypto.randomUUID();
+      sessionStorage.setItem("session_id", id);
+    }
+    sessionIdRef.current = id;
+
+    // Restore conversation from Redis on page refresh
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const headers: Record<string, string> = {};
+    if (process.env.NEXT_PUBLIC_API_KEY) {
+      headers["x-api-key"] = process.env.NEXT_PUBLIC_API_KEY;
+    }
+    fetch(`${apiUrl}/session/${id}`, { headers })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.turns?.length) setConversation(data.turns);
+      })
+      .catch(() => {});
+
+    // Flush session to PostgreSQL on tab/browser close
+    const handleUnload = () => {
+      const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+      const endUrl = `${apiUrl}/session/end`;
+      const body = JSON.stringify({
+        session_id: sessionIdRef.current,
+        user_id: apiKey || "anonymous",
+      });
+      navigator.sendBeacon(
+        endUrl,
+        new Blob([body], { type: "application/json" })
+      );
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -27,7 +74,6 @@ export default function HomePage() {
 
     setLoading(true);
     setError(null);
-    setResult(null);
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -39,7 +85,10 @@ export default function HomePage() {
       const res = await fetch(`${apiUrl}/search`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({
+          question,
+          session_id: sessionIdRef.current,
+        }),
       });
 
       if (!res.ok) {
@@ -48,7 +97,11 @@ export default function HomePage() {
       }
 
       const data: SearchResponse = await res.json();
-      setResult(data);
+      setConversation((prev) => [
+        ...prev,
+        { question, answer: data.answer, sources: data.sources },
+      ]);
+      setQuestion("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -62,7 +115,51 @@ export default function HomePage() {
         Search Knowledge Base
       </h1>
 
-      <form onSubmit={handleSubmit} className="mb-10 flex gap-3">
+      {/* Conversation thread */}
+      {conversation.length > 0 && (
+        <div className="mb-10 space-y-6">
+          {conversation.map((turn, i) => (
+            <div key={i} className="space-y-3">
+              {/* Question */}
+              <div className="flex justify-end">
+                <div className="max-w-[80%] rounded-lg bg-zinc-900 px-4 py-3 text-white dark:bg-zinc-100 dark:text-zinc-900">
+                  {turn.question}
+                </div>
+              </div>
+
+              {/* Answer */}
+              <div className="prose prose-zinc dark:prose-invert max-w-none rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
+                <ReactMarkdown>{turn.answer}</ReactMarkdown>
+              </div>
+
+              {/* Sources */}
+              {turn.sources.length > 0 && (
+                <ul className="space-y-1">
+                  {turn.sources.map((src, j) => (
+                    <li
+                      key={j}
+                      className="flex items-center justify-between rounded-lg border border-zinc-200 px-4 py-2 text-sm dark:border-zinc-800"
+                    >
+                      <span className="truncate font-mono">{src.filename}</span>
+                      <span className="ml-4 shrink-0 text-zinc-500">
+                        {(src.similarity * 100).toFixed(1)}% match
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="flex gap-3">
         <div className="relative flex-1">
           <input
             type="text"
@@ -84,44 +181,6 @@ export default function HomePage() {
           {loading ? "Searching..." : "Search"}
         </button>
       </form>
-
-      {error && (
-        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-8">
-          {/* Answer */}
-          <section>
-            <h2 className="mb-3 text-lg font-semibold">Answer</h2>
-            <div className="prose prose-zinc dark:prose-invert max-w-none rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
-              <ReactMarkdown>{result.answer}</ReactMarkdown>
-            </div>
-          </section>
-
-          {/* Sources */}
-          <section>
-            <h2 className="mb-3 text-lg font-semibold">Sources</h2>
-            <ul className="space-y-2">
-              {result.sources.map((src, i) => (
-                <li
-                  key={i}
-                  className="flex items-center justify-between rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-800"
-                >
-                  <span className="truncate font-mono text-sm">
-                    {src.filename}
-                  </span>
-                  <span className="ml-4 shrink-0 text-sm text-zinc-500">
-                    {(src.similarity * 100).toFixed(1)}% match
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
-      )}
     </div>
   );
 }

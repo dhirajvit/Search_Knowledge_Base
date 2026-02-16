@@ -1,11 +1,13 @@
 import json
 import os
 import tempfile
+from typing import Optional
 
 import boto3
 import psycopg2
+import redis
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -43,6 +45,12 @@ bedrock_client = boto3.client(
 
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
 BEDROCK_EMBED_MODEL_ID = os.getenv("BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0")
+
+REDIS_HOST = os.getenv("REDIS_ENDPOINT", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+SESSION_TTL = 3600  # 1 hour
+
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 
 def get_embedding(text: str) -> list[float]:
@@ -189,6 +197,7 @@ async def create_vector():
 
 class SearchRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
+    session_id: Optional[str] = None
 
 
 @app.post("/search")
@@ -200,7 +209,7 @@ async def search(request: SearchRequest):
     cur.execute(
         "SELECT c.content, c.metadata, d.filename, 1 - (c.embedding <=> %s::vector) AS similarity "
         "FROM chunks c JOIN documents d ON c.document_id = d.id "
-        "WHERE 1 - (c.embedding <=> %s::vector) > 0.2 "
+        "WHERE 1 - (c.embedding <=> %s::vector) > 0.1 "
         "ORDER BY c.embedding <=> %s::vector LIMIT 5",
         (str(question_embedding), str(question_embedding), str(question_embedding)),
     )
@@ -209,45 +218,124 @@ async def search(request: SearchRequest):
     conn.close()
 
     if not results:
-        return {
-            "answer": "No relevant documents found in the knowledge base.The search is grounded uploaded documents with only one document related to setup git on linux",
-            "filenames": [],
-            "sources": [],
-        }
+        answer = "No relevant documents found in the knowledge base."
+        sources = []
+        filenames = []
+    else:
+        context = "\n\n".join([f"[Source: {row[2]}]\n{row[0]}" for row in results])
 
-    context = "\n\n".join([f"[Source: {row[2]}]\n{row[0]}" for row in results])
+        # Build conversation history from Redis
+        conversation_history = ""
+        if request.session_id:
+            redis_key = f"session:{request.session_id}"
+            previous_turns = redis_client.lrange(redis_key, 0, -1)
+            if previous_turns:
+                turns = [json.loads(t) for t in previous_turns]
+                conversation_history = "Previous conversation:\n"
+                for turn in turns[-5:]:  # last 5 turns for context
+                    conversation_history += f"Q: {turn['question']}\nA: {turn['answer']}\n\n"
 
-    prompt = (
-        f"Based on the following knowledge base excerpts, answer the question. return in .md format\n\n"
-        f"Context:\n{context}\n\n"
-        f"Question: {request.question}\n\n"
-        f"Answer:"
-    )
+        prompt = (
+            f"Based on the following knowledge base excerpts, answer the question. return in .md format\n\n"
+            f"{conversation_history}"
+            f"Context:\n{context}\n\n"
+            f"Question: {request.question}\n\n"
+            f"Answer:"
+        )
 
-    response = bedrock_client.converse(
-        modelId=BEDROCK_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
-    )
-    answer = response["output"]["message"]["content"][0]["text"]
+        response = bedrock_client.converse(
+            modelId=BEDROCK_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
+        )
+        answer = response["output"]["message"]["content"][0]["text"]
 
-    best_by_file: dict[str, tuple] = {}
-    for row in results:
-        filename = row[2]
-        similarity = row[3]
-        if filename not in best_by_file or similarity > best_by_file[filename][3]:
-            best_by_file[filename] = row
+        best_by_file: dict[str, tuple] = {}
+        for row in results:
+            filename = row[2]
+            similarity = row[3]
+            if filename not in best_by_file or similarity > best_by_file[filename][3]:
+                best_by_file[filename] = row
 
-    filenames = list(best_by_file.keys())
-    sources = [
-        {"filename": row[2], "similarity": round(row[3], 4), "excerpt": row[0][:200]}
-        for row in best_by_file.values()
-    ]
+        filenames = list(best_by_file.keys())
+        sources = [
+            {"filename": row[2], "similarity": round(row[3], 4), "excerpt": row[0][:200]}
+            for row in best_by_file.values()
+        ]
+
+    # Store turn in Redis
+    if request.session_id:
+        redis_key = f"session:{request.session_id}"
+        turn = json.dumps({
+            "question": request.question,
+            "answer": answer,
+            "sources": sources,
+        })
+        redis_client.rpush(redis_key, turn)
+        redis_client.expire(redis_key, SESSION_TTL)
 
     return {
         "answer": answer,
         "filenames": filenames,
         "sources": sources,
+    }
+
+
+class SessionEndRequest(BaseModel):
+    session_id: str
+    user_id: str
+
+
+@app.post("/session/end")
+async def end_session(request: SessionEndRequest):
+    redis_key = f"session:{request.session_id}"
+    turns = redis_client.lrange(redis_key, 0, -1)
+
+    if not turns:
+        return {"status": "no_conversation"}
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        # Create user-session mapping
+        cur.execute(
+            "INSERT INTO user_sessions (user_id, session_id) VALUES (%s, %s) "
+            "ON CONFLICT (session_id) DO NOTHING",
+            (request.user_id, request.session_id),
+        )
+
+        # Insert all conversation turns
+        for turn_json in turns:
+            turn = json.loads(turn_json)
+            cur.execute(
+                "INSERT INTO conversations (session_id, question, answer, sources) "
+                "VALUES (%s, %s, %s, %s)",
+                (request.session_id, turn["question"], turn["answer"], json.dumps(turn["sources"])),
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save session: {str(e)}")
+    finally:
+        cur.close()
+        conn.close()
+
+    # Clean up Redis
+    redis_client.delete(redis_key)
+
+    return {"status": "saved", "turns": len(turns)}
+
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: str):
+    redis_key = f"session:{session_id}"
+    turns = redis_client.lrange(redis_key, 0, -1)
+
+    return {
+        "session_id": session_id,
+        "turns": [json.loads(t) for t in turns],
     }
 
 

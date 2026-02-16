@@ -101,6 +101,8 @@ resource "aws_lambda_function" "api" {
       DB_USER                  = aws_db_instance.postgres.username
       DB_PASSWORD_SECRET_ARN   = aws_db_instance.postgres.master_user_secret[0].secret_arn
       DOCUMENTS_BUCKET         = aws_s3_bucket.documents.id
+      REDIS_ENDPOINT           = aws_elasticache_cluster.redis.cache_nodes[0].address
+      REDIS_PORT               = tostring(aws_elasticache_cluster.redis.port)
     }
   }
 
@@ -190,6 +192,61 @@ resource "aws_api_gateway_integration" "get_create_vector" {
   uri                     = aws_lambda_function.api.invoke_arn
 }
 
+# --- /session ---
+resource "aws_api_gateway_resource" "session" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "session"
+}
+
+# --- POST /session/end ---
+resource "aws_api_gateway_resource" "session_end" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.session.id
+  path_part   = "end"
+}
+
+resource "aws_api_gateway_method" "post_session_end" {
+  rest_api_id      = aws_api_gateway_rest_api.main.id
+  resource_id      = aws_api_gateway_resource.session_end.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = true
+}
+
+resource "aws_api_gateway_integration" "post_session_end" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_end.id
+  http_method             = aws_api_gateway_method.post_session_end.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.api.invoke_arn
+}
+
+# --- GET /session/{session_id} ---
+resource "aws_api_gateway_resource" "session_id" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.session.id
+  path_part   = "{session_id}"
+}
+
+resource "aws_api_gateway_method" "get_session" {
+  rest_api_id      = aws_api_gateway_rest_api.main.id
+  resource_id      = aws_api_gateway_resource.session_id.id
+  http_method      = "GET"
+  authorization    = "NONE"
+  api_key_required = true
+}
+
+resource "aws_api_gateway_integration" "get_session" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_id.id
+  http_method             = aws_api_gateway_method.get_session.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.api.invoke_arn
+}
+
 # --- GET / (root) ---
 resource "aws_api_gateway_method" "get_root" {
   rest_api_id      = aws_api_gateway_rest_api.main.id
@@ -222,6 +279,10 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_integration.post_search,
       aws_api_gateway_method.get_create_vector,
       aws_api_gateway_integration.get_create_vector,
+      aws_api_gateway_method.post_session_end,
+      aws_api_gateway_integration.post_session_end,
+      aws_api_gateway_method.get_session,
+      aws_api_gateway_integration.get_session,
     ]))
   }
 

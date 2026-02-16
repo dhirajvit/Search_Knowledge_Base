@@ -170,4 +170,22 @@ resource "aws_security_group" "rds" {
   }
 }
 
+# Security group for Redis (ElastiCache)
+resource "aws_security_group" "redis" {
+  provider    = aws.ap-southeast-2
+  name        = "${var.project_name}-${var.environment}-redis-sg"
+  description = "Security group for ElastiCache Redis"
+  vpc_id      = aws_vpc.main.id
 
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda.id]
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-redis-sg"
+    Environment = var.environment
+  }
+}

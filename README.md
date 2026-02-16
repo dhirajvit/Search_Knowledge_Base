@@ -6,34 +6,40 @@ The problem targeted is to locate a training video based on semantic search. We 
 
 The more important use case is when the vector database is created from a video file — a lecture delivered by a teacher in school, a court case discussed by a lawyer, or a politician's statement from 50 years ago. We can convert video into transcript and create vectors from it.
 
+As of now, only one document related to setup git on linux is uploaded for RAG. To test short-term and long-term memory, search once for "git" and note the similarity percentage. Then close the tab, reopen, and search for "linux". This time the LLM will have both "git" and "linux" in context from conversation history, giving a better result.
+
 ## Features
 
 - Semantic search over markdown documents using vector embeddings
 - RAG (Retrieval-Augmented Generation) powered answers via Amazon Bedrock
+- Short-term memory using Redis — conversation context within a session
+- Long-term memory using PostgreSQL — past conversations persisted on session end
+- Session management — auto-generated per browser tab, flushed on close
 - Document chunking with LangChain text splitters
 - Vector similarity search using PostgreSQL with pgvector
 - Documents stored in S3 — downloaded and vectorized on demand
 - Database migrations managed by Alembic (auto-run on Lambda cold start)
 - REST API with daily request quota and API key authentication
-- CloudFront CDN in front of API Gateway
+- CloudFront CDN serving frontend (S3) and API (API Gateway)
 - Input validation (max 1000 characters) on both backend and frontend
 - Lambda deployment packages uploaded to S3 (supports bundles > 70MB)
-- Full Terraform IaC — VPC, subnets, NAT Gateway, RDS, Lambda, API Gateway, CloudFront
+- Full Terraform IaC — VPC, subnets, NAT Gateway, RDS, ElastiCache, Lambda, API Gateway, CloudFront
 
 ## Architecture
 
 ```
-User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  Lambda  →  Bedrock / RDS PostgreSQL
-                                                                           ↕
-                                                                     S3 Documents
+User  →  Next.js Frontend (S3)  →  CloudFront  →  API Gateway (REST v1)  →  Lambda  →  Bedrock / RDS PostgreSQL
+                                                                               ↕              ↕
+                                                                         S3 Documents    ElastiCache Redis
 ```
 
 | Component        | Technology                                            |
 | ---------------- | ----------------------------------------------------- |
-| Frontend         | Next.js with Tailwind CSS                             |
+| Frontend         | Next.js with Tailwind CSS (static export to S3)       |
 | Backend          | FastAPI on AWS Lambda via Mangum                      |
 | LLM              | Amazon Bedrock — Nova Lite (chat), Titan (embeddings) |
 | Database         | RDS PostgreSQL 16 with pgvector                       |
+| Cache            | ElastiCache Redis (session memory)                    |
 | Migrations       | Alembic                                               |
 | Infrastructure   | Terraform                                             |
 | Networking       | VPC, public/private subnets, NAT Gateway, IGW         |
@@ -53,12 +59,13 @@ User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  L
 │   │           ├── env.py             # Alembic environment (DB URL builder)
 │   │           ├── script.py.mako     # Migration template
 │   │           └── versions/
-│   │               └── 0001_create_initial_tables.py
+│   │               ├── 0001_create_initial_tables.py
+│   │               └── 0002_create_session_tables.py
 │   ├── lambda_handler.py             # Lambda entry point (Mangum)
 │   ├── deploy.py                     # Builds Lambda zip and uploads to S3
 │   └── pyproject.toml                # Python dependencies
 ├── frontend/
-│   └── search-knowledge-base-app/    # Next.js application
+│   └── search-knowledge-base-app/    # Next.js application (static export)
 ├── scripts/
 │   ├── deploy.sh                     # Full deployment script
 │   └── destroy.sh                    # Tear down infrastructure
@@ -66,6 +73,7 @@ User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  L
     ├── main.tf                       # Lambda, API Gateway, CloudFront, S3, IAM
     ├── networking.tf                 # VPC, subnets, route tables, NAT GW, security groups
     ├── database.tf                   # RDS PostgreSQL
+    ├── elasticache.tf                # ElastiCache Redis
     ├── variables.tf                  # Input variables
     ├── outputs.tf                    # Terraform outputs
     ├── terraform.tfvars              # Variable values
@@ -75,22 +83,39 @@ User  →  Next.js Frontend  →  CloudFront  →  API Gateway (REST v1)  →  L
 
 ## API Endpoints
 
-| Method | Path             | Description                                                       |
-| ------ | ---------------- | ----------------------------------------------------------------- |
-| `GET`  | `/`              | Root — returns API info                                           |
-| `GET`  | `/health`        | Health check                                                      |
-| `POST` | `/search`        | Semantic search (max 1000 chars), returns RAG answer with sources |
-| `GET`  | `/create_vector` | Download docs from S3, generate embeddings, store in PostgreSQL   |
+| Method | Path                    | Description                                                       |
+| ------ | ----------------------- | ----------------------------------------------------------------- |
+| `GET`  | `/`                     | Root — returns API info                                           |
+| `GET`  | `/health`               | Health check                                                      |
+| `POST` | `/search`               | Semantic search (max 1000 chars), returns RAG answer with sources |
+| `GET`  | `/create_vector`        | Download docs from S3, generate embeddings, store in PostgreSQL   |
+| `GET`  | `/session/{session_id}` | Retrieve conversation history from Redis                          |
+| `POST` | `/session/end`          | Flush session from Redis to PostgreSQL                            |
 
 All endpoints require an API key via `x-api-key` header. Daily quota: 100 requests.
 
+## Session Memory
+
+### How it works
+
+1. **Session start** — frontend generates a UUID, stored in `sessionStorage` (per tab)
+2. **During session** — each Q&A turn is stored in Redis (`session:<id>`), last 5 turns are included in the LLM prompt for conversational context
+3. **Session end** — on tab/browser close, `navigator.sendBeacon` calls `/session/end` which flushes the conversation from Redis to PostgreSQL (`user_sessions` + `conversations` tables)
+4. **Safety net** — Redis TTL (1 hour) auto-expires sessions if the browser crashes without calling `/session/end`
+5. **Page refresh** — conversation is restored from Redis via `GET /session/{session_id}`
+
+### Database tables
+
+- `user_sessions` — maps `user_id` (API key) to `session_id`
+- `conversations` — stores Q&A turns permanently, linked to session
+
 ## Sample Request and Response
 
-Question: what is capital of australia
-Answer: No relevant documents found in the knowledge base.
+**Question:** what is capital of australia
+**Answer:** No relevant documents found in the knowledge base.
 
-Question : setup instruction for git on linux
-Answer : instruction with grounded document ref: /tmp/tmpwv007xhl/udemy/ai-engineering/SETUP-git-linux.md
+**Question:** setup instruction for git on linux
+**Answer:** Grounded response with document reference: `udemy/ai-engineering/SETUP-git-linux.md`
 
 ### POST /search
 
@@ -100,7 +125,7 @@ Answer : instruction with grounded document ref: /tmp/tmpwv007xhl/udemy/ai-engin
 curl -X POST https://<api-gateway-url>/dev/search \
   -H "x-api-key: <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"question": "How do I clone a repository in Linux?"}'
+  -d '{"question": "How do I clone a repository in Linux?", "session_id": "550e8400-e29b-41d4-a716-446655440000"}'
 ```
 
 **Response:**
@@ -108,12 +133,10 @@ curl -X POST https://<api-gateway-url>/dev/search \
 ```json
 {
   "answer": "# Clone a Repository in Linux\n\nTo clone a repository...",
-  "filenames": [
-    "documents/udemy/ai-engineering/SETUP-git-linux.md"
-  ],
+  "filenames": ["udemy/ai-engineering/SETUP-git-linux.md"],
   "sources": [
     {
-      "filename": "documents/udemy/ai-engineering/SETUP-git-linux.md",
+      "filename": "udemy/ai-engineering/SETUP-git-linux.md",
       "similarity": 0.3586,
       "excerpt": "# Setting Up Git on Linux..."
     }
@@ -142,7 +165,7 @@ curl https://<api-gateway-url>/dev/health \
 
 - Python 3.12+
 - Node.js
-- Docker (for Lambda packaging and local PostgreSQL)
+- Docker (for Lambda packaging, local PostgreSQL, and local Redis)
 - AWS CLI configured with Bedrock model access enabled
 - Terraform
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
@@ -155,7 +178,7 @@ curl https://<api-gateway-url>/dev/health \
 cd backend
 uv sync
 cp .env.example .env   # fill in DATABASE_URL, AWS credentials
-uv run uvicorn app.server:app --reload --port 8000
+REDIS_ENDPOINT=localhost uv run uvicorn app.server:app --reload --port 8000
 ```
 
 ### Frontend
@@ -184,6 +207,14 @@ Migrations run automatically on server startup via Alembic. Set `DATABASE_URL` i
 ```
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/searchknowledgebase
 ```
+
+### Local Redis
+
+```bash
+docker run --name redis -p 6379:6379 -d redis:7
+```
+
+Set `REDIS_ENDPOINT=localhost` in your `.env` or pass it inline when starting the backend.
 
 ## Uploading Documents to S3
 
@@ -222,6 +253,8 @@ curl https://<api-gateway-url>/dev/create_vector \
 | Variable                 | Default                        | Description                            |
 | ------------------------ | ------------------------------ | -------------------------------------- |
 | `DATABASE_URL`           | —                              | PostgreSQL connection string           |
+| `REDIS_ENDPOINT`         | `localhost`                    | Redis host                             |
+| `REDIS_PORT`             | `6379`                         | Redis port                             |
 | `DEFAULT_AWS_REGION`     | `ap-southeast-2`               | AWS region for Bedrock                 |
 | `BEDROCK_MODEL_ID`       | `amazon.nova-lite-v1:0`        | Bedrock LLM model                      |
 | `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model                |
@@ -237,6 +270,8 @@ curl https://<api-gateway-url>/dev/create_vector \
 | `DB_NAME`                | Database name                            |
 | `DB_USER`                | Database username                        |
 | `DB_PASSWORD_SECRET_ARN` | Secrets Manager ARN for the RDS password |
+| `REDIS_ENDPOINT`         | ElastiCache Redis endpoint               |
+| `REDIS_PORT`             | ElastiCache Redis port                   |
 | `DOCUMENTS_BUCKET`       | S3 bucket for knowledge base documents   |
 | `CORS_ORIGINS`           | CloudFront domain                        |
 | `BEDROCK_MODEL_ID`       | Bedrock LLM model                        |
@@ -253,6 +288,9 @@ This script:
 1. Builds the Lambda deployment package using Docker
 2. Uploads the zip to S3
 3. Runs `terraform init` and `terraform apply`
+4. Builds the frontend with API URL and key baked in
+5. Syncs the static export to the frontend S3 bucket
+6. Invalidates the CloudFront cache
 
 ### First-time Setup
 
@@ -334,6 +372,16 @@ aws s3 cp doc.md s3://<bucket>/doc.md
 ```
 
 Only `.md` files are processed.
+
+### ElastiCache permissions
+
+If you get `AccessDenied` when creating ElastiCache resources, attach the ElastiCache policy to your IAM user:
+
+```bash
+aws iam attach-user-policy \
+  --user-name <your-iam-username> \
+  --policy-arn arn:aws:iam::aws:policy/AmazonElastiCacheFullAccess
+```
 
 ## Future Enhancements
 
