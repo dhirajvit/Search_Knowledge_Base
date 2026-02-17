@@ -103,6 +103,8 @@ resource "aws_lambda_function" "api" {
       DOCUMENTS_BUCKET         = aws_s3_bucket.documents.id
       REDIS_ENDPOINT           = aws_elasticache_cluster.redis.cache_nodes[0].address
       REDIS_PORT               = tostring(aws_elasticache_cluster.redis.port)
+      LANGFUSE_SECRET_ARN      = aws_secretsmanager_secret.langfuse.arn
+      LANGFUSE_HOST            = "https://us.cloud.langfuse.com"
     }
   }
 
@@ -341,7 +343,13 @@ resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
   role       = aws_iam_role.lambda_role.name
 }
 
-# IAM policy for Lambda to read RDS password from Secrets Manager
+# Secrets Manager secret for Langfuse + OpenAI keys
+resource "aws_secretsmanager_secret" "langfuse" {
+  name = "${local.name_prefix}-langfuse-keys"
+  tags = local.common_tags
+}
+
+# IAM policy for Lambda to read secrets from Secrets Manager
 resource "aws_iam_role_policy" "lambda_secrets_access" {
   name = "${local.name_prefix}-lambda-secrets-access"
   role = aws_iam_role.lambda_role.id
@@ -354,7 +362,10 @@ resource "aws_iam_role_policy" "lambda_secrets_access" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = aws_db_instance.postgres.master_user_secret[0].secret_arn
+        Resource = [
+          aws_db_instance.postgres.master_user_secret[0].secret_arn,
+          aws_secretsmanager_secret.langfuse.arn
+        ]
       }
     ]
   })

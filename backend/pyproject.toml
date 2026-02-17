@@ -15,6 +15,7 @@ dependencies = [
     "langchain-text-splitters",
     "psycopg2-binary",
     "alembic",
-    "redis"
+    "redis",
+    "langfuse"
 ]
 

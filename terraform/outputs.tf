@@ -83,3 +83,8 @@ output "redis_endpoint" {
   description = "ElastiCache Redis endpoint"
   value       = aws_elasticache_cluster.redis.cache_nodes[0].address
 }
+
+output "langfuse_secret_arn" {
+  description = "Secrets Manager ARN for Langfuse and OpenAI keys"
+  value       = aws_secretsmanager_secret.langfuse.arn
+}

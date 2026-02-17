@@ -9,7 +9,7 @@ echo "🚀 Deploying ${PROJECT_NAME} to ${ENVIRONMENT}..."
 # Build Lambda package
 cd "$(dirname "$0")/.."        # project root
 echo "📦 Building Lambda package..."
-(cd backend && uv run deploy.py)
+(cd backend && uv sync && uv run deploy.py)
 
 #  Upload Lambda zip to S3
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

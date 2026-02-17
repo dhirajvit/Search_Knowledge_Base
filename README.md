@@ -260,6 +260,9 @@ curl https://<api-gateway-url>/dev/create_vector \
 | `BEDROCK_EMBED_MODEL_ID` | `amazon.titan-embed-text-v2:0` | Bedrock embedding model                |
 | `CORS_ORIGINS`           | `http://localhost:3000`        | Allowed CORS origins (comma-separated) |
 | `DOCUMENTS_BUCKET`       | —                              | S3 bucket for knowledge base documents |
+| `LANGFUSE_PUBLIC_KEY`    | —                              | Langfuse public key (local only)       |
+| `LANGFUSE_SECRET_KEY`    | —                              | Langfuse secret key (local only)       |
+| `LANGFUSE_HOST`          | `https://cloud.langfuse.com`   | Langfuse host URL                      |
 
 ### Lambda (set by Terraform)
 
@@ -276,6 +279,7 @@ curl https://<api-gateway-url>/dev/create_vector \
 | `CORS_ORIGINS`           | CloudFront domain                        |
 | `BEDROCK_MODEL_ID`       | Bedrock LLM model                        |
 | `BEDROCK_EMBED_MODEL_ID` | Bedrock embedding model                  |
+| `LANGFUSE_SECRET_ARN`    | Secrets Manager ARN for Langfuse + OpenAI |
 
 ## Deployment
 
@@ -412,3 +416,44 @@ Add [Stripe](https://stripe.com/) to turn this into a SaaS product:
 - Stripe Checkout for subscription management
 - Webhook integration to activate/deactivate features based on subscription status
 - Usage-based billing option for high-volume API consumers
+
+## Observability — Langfuse
+
+[Langfuse](https://langfuse.com/) traces all Bedrock LLM calls — token usage, cost, latency, and full prompt/response history.
+
+### What is traced
+
+- **Embedding calls** — `get_embedding()` via `bedrock_client.invoke_model()` (Titan)
+- **Chat calls** — `/search` via `bedrock_client.converse()` (Nova Lite), including input/output token counts
+
+### Setup
+
+1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available)
+2. Create a project and get your public/secret keys
+3. After `terraform apply`, populate the Secrets Manager secret:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id "$(cd terraform && terraform output -raw langfuse_secret_arn)" \
+  --secret-string '{"langfuse_public_key":"pk-...","langfuse_secret_key":"sk-...","openai_api_key":"sk-..."}'
+```
+
+Credentials are stored in AWS Secrets Manager (`langfuse-keys`), not in env vars or code. Lambda reads them on cold start.
+
+### Local development
+
+Add to your `.env`:
+
+```
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+### Dashboard
+
+After making a few searches, open your Langfuse project dashboard to see:
+- Traces per request with full prompt and response
+- Token usage (input/output) per call
+- Cost per model
+- Latency breakdown

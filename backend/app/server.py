@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langfuse import Langfuse, observe, get_client
 from pydantic import BaseModel, Field
 
 from alembic import command
@@ -52,7 +53,36 @@ SESSION_TTL = 3600  # 1 hour
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
+# Initialize Langfuse — set env vars so the SDK auto-configures
+def init_langfuse():
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
 
+    if not public_key:
+        langfuse_secret_arn = os.getenv("LANGFUSE_SECRET_ARN")
+        if langfuse_secret_arn:
+            region = os.getenv("DEFAULT_AWS_REGION", "ap-southeast-2")
+            client = boto3.client("secretsmanager", region_name=region)
+            secret = json.loads(
+                client.get_secret_value(SecretId=langfuse_secret_arn)["SecretString"]
+            )
+            os.environ["LANGFUSE_PUBLIC_KEY"] = secret.get("langfuse_public_key", "")
+            os.environ["LANGFUSE_SECRET_KEY"] = secret.get("langfuse_secret_key", "")
+            if secret.get("openai_api_key"):
+                os.environ["OPENAI_API_KEY"] = secret["openai_api_key"]
+            print("Langfuse configured from Secrets Manager")
+            return True
+
+    if public_key:
+        print("Langfuse configured from env vars")
+        return True
+
+    print("Langfuse not configured — tracing disabled")
+    return False
+
+langfuse_enabled = init_langfuse()
+
+
+@observe(as_type="embedding")
 def get_embedding(text: str) -> list[float]:
     response = bedrock_client.invoke_model(
         modelId=BEDROCK_EMBED_MODEL_ID,
@@ -61,6 +91,12 @@ def get_embedding(text: str) -> list[float]:
         accept="application/json",
     )
     result = json.loads(response["body"].read())
+
+    get_client().update_current_generation(
+        model=BEDROCK_EMBED_MODEL_ID,
+        usage_details={"input": len(text.split())},
+    )
+
     return result["embedding"]
 
 
@@ -201,6 +237,7 @@ class SearchRequest(BaseModel):
 
 
 @app.post("/search")
+@observe()
 async def search(request: SearchRequest):
     question_embedding = get_embedding(request.question)
 
@@ -218,7 +255,7 @@ async def search(request: SearchRequest):
     conn.close()
 
     if not results:
-        answer = "No relevant documents found in the knowledge base."
+        answer = "No relevant documents found in the knowledge base.The solution is grounded to search only uploaded document. As of now only one uploaded document setup git on linux"
         sources = []
         filenames = []
     else:
@@ -249,6 +286,17 @@ async def search(request: SearchRequest):
             inferenceConfig={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
         )
         answer = response["output"]["message"]["content"][0]["text"]
+
+        # Log LLM generation to Langfuse
+        token_usage = response.get("usage", {})
+        get_client().update_current_generation(
+            model=BEDROCK_MODEL_ID,
+            usage_details={
+                "input": token_usage.get("inputTokens", 0),
+                "output": token_usage.get("outputTokens", 0),
+                "total": token_usage.get("totalTokens", 0),
+            },
+        )
 
         best_by_file: dict[str, tuple] = {}
         for row in results:
@@ -337,6 +385,12 @@ async def get_session(session_id: str):
         "session_id": session_id,
         "turns": [json.loads(t) for t in turns],
     }
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    if langfuse_enabled:
+        get_client().flush()
 
 
 if __name__ == "__main__":
