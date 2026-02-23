@@ -4,29 +4,23 @@ import tempfile
 from typing import Optional
 
 import boto3
-import psycopg2
 import redis
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langfuse import Langfuse, observe, get_client
+from langfuse import Langfuse, get_client, observe
+from .langfuse.langfuse import init_langfuse
+from .database.database_init import get_db_connection, run_migrations
+from .bedrock.llm import call_bedrock, bedrock_client
+from .PIIRedaction import PIIRedactor
 from pydantic import BaseModel, Field
-
-from alembic import command
-from alembic.config import Config
 
 load_dotenv(override=True)
 
 # Run migrations once at module load (Lambda cold start only)
-try:
-    alembic_ini = os.path.join(os.path.dirname(__file__), "database", "alembic.ini")
-    alembic_cfg = Config(alembic_ini)
-    command.upgrade(alembic_cfg, "head")
-    print("Migrations completed successfully.")
-except Exception as e:
-    print(f"Migration warning: {e}")
+run_migrations()
 
 app = FastAPI()
 
@@ -39,11 +33,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-bedrock_client = boto3.client(
-    service_name="bedrock-runtime",
-    region_name=os.getenv("DEFAULT_AWS_REGION", "ap-southeast-2"),
-)
-
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
 BEDROCK_EMBED_MODEL_ID = os.getenv("BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0")
 
@@ -53,33 +42,8 @@ SESSION_TTL = 3600  # 1 hour
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
-# Initialize Langfuse — set env vars so the SDK auto-configures
-def init_langfuse():
-    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-
-    if not public_key:
-        langfuse_secret_arn = os.getenv("LANGFUSE_SECRET_ARN")
-        if langfuse_secret_arn:
-            region = os.getenv("DEFAULT_AWS_REGION", "ap-southeast-2")
-            client = boto3.client("secretsmanager", region_name=region)
-            secret = json.loads(
-                client.get_secret_value(SecretId=langfuse_secret_arn)["SecretString"]
-            )
-            os.environ["LANGFUSE_PUBLIC_KEY"] = secret.get("langfuse_public_key", "")
-            os.environ["LANGFUSE_SECRET_KEY"] = secret.get("langfuse_secret_key", "")
-            if secret.get("openai_api_key"):
-                os.environ["OPENAI_API_KEY"] = secret["openai_api_key"]
-            print("Langfuse configured from Secrets Manager")
-            return True
-
-    if public_key:
-        print("Langfuse configured from env vars")
-        return True
-
-    print("Langfuse not configured — tracing disabled")
-    return False
-
 langfuse_enabled = init_langfuse()
+redactor = PIIRedactor()
 
 
 @observe(as_type="embedding")
@@ -99,33 +63,6 @@ def get_embedding(text: str) -> list[float]:
 
     return result["embedding"]
 
-
-def get_database_url():
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        return database_url
-
-    password_secret_arn = os.getenv("DB_PASSWORD_SECRET_ARN")
-    if password_secret_arn:
-        region = os.getenv("DEFAULT_AWS_REGION", "ap-southeast-2")
-        client = boto3.client("secretsmanager", region_name=region)
-        secret = json.loads(
-            client.get_secret_value(SecretId=password_secret_arn)["SecretString"]
-        )
-        password = secret["password"]
-    else:
-        password = os.getenv("DB_PASSWORD", "")
-
-    host = os.getenv("RDS_ENDPOINT", "localhost")
-    port = os.getenv("DB_PORT", "5432")
-    dbname = os.getenv("DB_NAME", "searchknowledgebase")
-    user = os.getenv("DB_USER", "dbadmin")
-
-    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-
-
-def get_db_connection():
-    return psycopg2.connect(get_database_url())
 
 
 @app.get("/")
@@ -237,7 +174,7 @@ class SearchRequest(BaseModel):
 
 
 @app.post("/search")
-@observe()
+@observe(capture_input=False, capture_output=False)
 async def search(request: SearchRequest):
     question_embedding = get_embedding(request.question)
 
@@ -280,23 +217,8 @@ async def search(request: SearchRequest):
             f"Answer:"
         )
 
-        response = bedrock_client.converse(
-            modelId=BEDROCK_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
-        )
-        answer = response["output"]["message"]["content"][0]["text"]
-
-        # Log LLM generation to Langfuse
-        token_usage = response.get("usage", {})
-        get_client().update_current_generation(
-            model=BEDROCK_MODEL_ID,
-            usage_details={
-                "input": token_usage.get("inputTokens", 0),
-                "output": token_usage.get("outputTokens", 0),
-                "total": token_usage.get("totalTokens", 0),
-            },
-        )
+        llm_response = call_bedrock(prompt, model=BEDROCK_MODEL_ID)
+        answer = llm_response.content
 
         best_by_file: dict[str, tuple] = {}
         for row in results:
@@ -322,11 +244,18 @@ async def search(request: SearchRequest):
         redis_client.rpush(redis_key, turn)
         redis_client.expire(redis_key, SESSION_TTL)
 
-    return {
+    response = {
         "answer": answer,
         "filenames": filenames,
         "sources": sources,
     }
+
+    get_client().update_current_span(
+        input=redactor.redact(request.question),
+        output=redactor.redact_dict(response),
+    )
+
+    return response
 
 
 class SessionEndRequest(BaseModel):
