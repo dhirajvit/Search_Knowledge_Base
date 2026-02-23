@@ -10,11 +10,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langfuse import Langfuse, get_client, observe
+from langfuse import get_client, observe
 from .langfuse.langfuse import init_langfuse
 from .database.database_init import get_db_connection, run_migrations
-from .bedrock.llm import call_bedrock, bedrock_client
+from .bedrock.llm import call_bedrock
 from .PIIRedaction import PIIRedactor
+from .embedding import get_embedding, search_semantic_cache, store_semantic_cache
 from pydantic import BaseModel, Field
 
 load_dotenv(override=True)
@@ -34,7 +35,6 @@ app.add_middleware(
 )
 
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
-BEDROCK_EMBED_MODEL_ID = os.getenv("BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0")
 
 REDIS_HOST = os.getenv("REDIS_ENDPOINT", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -45,23 +45,6 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=Tr
 langfuse_enabled = init_langfuse()
 redactor = PIIRedactor()
 
-
-@observe(as_type="embedding")
-def get_embedding(text: str) -> list[float]:
-    response = bedrock_client.invoke_model(
-        modelId=BEDROCK_EMBED_MODEL_ID,
-        body=json.dumps({"inputText": text}),
-        contentType="application/json",
-        accept="application/json",
-    )
-    result = json.loads(response["body"].read())
-
-    get_client().update_current_generation(
-        model=BEDROCK_EMBED_MODEL_ID,
-        usage_details={"input": len(text.split())},
-    )
-
-    return result["embedding"]
 
 
 
@@ -178,6 +161,17 @@ class SearchRequest(BaseModel):
 async def search(request: SearchRequest):
     question_embedding = get_embedding(request.question)
 
+    cached_answer, similarity = search_semantic_cache(question_embedding)
+    print(f"cached_result: {cached_answer}, similarity: {similarity}")
+    if cached_answer:
+        response = {"answer": cached_answer, "filenames": [], "sources": []}
+        get_client().update_current_span(
+            input=redactor.redact(request.question),
+            output=redactor.redact_dict(response),
+            metadata={"cache_hit": True, "similarity": similarity},
+        )
+        return response
+
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
@@ -220,11 +214,13 @@ async def search(request: SearchRequest):
         llm_response = call_bedrock(prompt, model=BEDROCK_MODEL_ID)
         answer = llm_response.content
 
+        store_semantic_cache(question_embedding, answer)
+
         best_by_file: dict[str, tuple] = {}
         for row in results:
             filename = row[2]
-            similarity = row[3]
-            if filename not in best_by_file or similarity > best_by_file[filename][3]:
+            row_similarity = row[3]
+            if filename not in best_by_file or row_similarity > best_by_file[filename][3]:
                 best_by_file[filename] = row
 
         filenames = list(best_by_file.keys())
@@ -253,6 +249,7 @@ async def search(request: SearchRequest):
     get_client().update_current_span(
         input=redactor.redact(request.question),
         output=redactor.redact_dict(response),
+        metadata={"cache_hit": False, "similarity": None},
     )
 
     return response
